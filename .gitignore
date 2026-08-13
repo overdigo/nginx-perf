@@ -1,0 +1,6 @@
+# Exclude AGENTS.md
+AGENTS.md
+
+# Build logs and temporary state files
+*.log
+*.state.*
