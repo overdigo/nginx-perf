@@ -356,7 +356,7 @@ check_cflag() {
 
 check_ldflag() {
     local flag=$1
-    echo 'int main(void) { return 0; }' | "$CC" -fuse-ld="$LD" $flag -x c - -o /dev/null >/dev/null 2>&1
+    echo 'int main(void) { return 0; }' | "$CC" -fuse-ld="$LD" -Wl,--fatal-warnings $flag -x c - -o /dev/null >/dev/null 2>&1
 }
 
 require_rust_toolchain() {
