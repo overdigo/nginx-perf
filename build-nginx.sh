@@ -352,12 +352,23 @@ version_at_least() {
 require_rust_toolchain() {
     local cargo_version rustc_version
 
-    cargo_version=$(cargo --version | awk '{print $2}')
-    rustc_version=$(rustc --version | awk '{print $2}')
-    version_at_least 1.81.0 "$cargo_version" \
-        || die "Cargo $cargo_version is too old for nginx-acme; Rust 1.81.0 or newer is required"
-    version_at_least 1.81.0 "$rustc_version" \
-        || die "rustc $rustc_version is too old for nginx-acme; Rust 1.81.0 or newer is required"
+    for cargo_dir in "$HOME/.cargo/bin" "/root/.cargo/bin" "/usr/local/cargo/bin"; do
+        if [[ -d "$cargo_dir" ]] && [[ ":$PATH:" != *":$cargo_dir:"* ]]; then
+            export PATH="$cargo_dir:$PATH"
+        fi
+    done
+
+    cargo_version=$(cargo --version 2>/dev/null | awk '{print $2}' || true)
+    rustc_version=$(rustc --version 2>/dev/null | awk '{print $2}' || true)
+
+    if [[ -z "$cargo_version" ]] || [[ -z "$rustc_version" ]] || ! version_at_least 1.81.0 "$cargo_version" || ! version_at_least 1.81.0 "$rustc_version"; then
+        die "Cargo/rustc $cargo_version is too old for nginx-acme (Rust 1.81.0 or newer is required).
+On Ubuntu 22.04, the apt package provides Rust 1.66. To install a modern Rust toolchain, run:
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+  source \$HOME/.cargo/env
+And execute the build preserving PATH:
+  sudo env \"PATH=\$PATH\" ./build-nginx.sh"
+    fi
 }
 
 latest_release_tag() {
@@ -483,8 +494,6 @@ install_dependencies() {
         ca-certificates
         curl
         jq
-        cargo
-        rustc
         libclang-dev
         perl
         cmake
@@ -492,6 +501,10 @@ install_dependencies() {
         zlib1g-dev
         libzstd-dev
     )
+
+    if ! command -v cargo >/dev/null 2>&1 || ! command -v rustc >/dev/null 2>&1; then
+        packages+=(cargo rustc)
+    fi
 
     if [[ "$OPENSSL_MODE" == system ]]; then
         packages+=(openssl libssl-dev)
@@ -573,8 +586,8 @@ prepare_zlib() {
         grep --fixed-strings --quiet -- 'compat=0' configure \
             || die "zlib-ng compatibility marker not found in $ZLIB_DIR/configure"
         sed --in-place 's/compat=0/compat=1/g' configure
-        CC="$CC" CFLAGS="$DEPENDENCY_CFLAGS" ./configure --zlib-compat
-        make --jobs "$JOBS"
+        CC="$CC" CFLAGS="$DEPENDENCY_CFLAGS" LDFLAGS="-fuse-ld=lld" ./configure --zlib-compat
+        make --jobs "$JOBS" libz.a
         make clean
     )
 }
@@ -1073,6 +1086,12 @@ main() {
     local arch
     local nginx_ref openssl_ref pcre_ref zlib_ref zstd_ref brotli_ref
     local headers_more_ref cache_purge_ref nginx_acme_ref
+
+    for cargo_dir in "$HOME/.cargo/bin" "/root/.cargo/bin" "/usr/local/cargo/bin"; do
+        if [[ -d "$cargo_dir" ]] && [[ ":$PATH:" != *":$cargo_dir:"* ]]; then
+            export PATH="$cargo_dir:$PATH"
+        fi
+    done
 
     load_env_file
 
