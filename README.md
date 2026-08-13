@@ -11,7 +11,7 @@ O projeto não é um pacote de aplicação. O script pode instalar pacotes com `
 - OpenSSL bundled ou OpenSSL da distribuição.
 - HTTP/2, HTTP/3, QUIC, TLS e stream TCP/UDP.
 - PCRE2 com JIT, zlib-ng em modo compatível, Brotli e zstd.
-- Módulos `headers-more` e `cache-purge`.
+- Módulos `headers-more`, `cache-purge` e `nginx-acme`.
 - `echo-nginx-module` desativado intencionalmente.
 - Patches para remoção do cabeçalho `Server` e do rodapé padrão de erros.
 - Flags de hardening, PIE, LTO, stack protector, Fortify Source, CET/IBT e inicialização automática de variáveis.
@@ -25,6 +25,7 @@ O projeto não é um pacote de aplicação. O script pode instalar pacotes com `
 - Acesso root ou `sudo` sem interação depois da validação inicial.
 - Acesso à rede para `nginx.org`, GitHub e repositórios das dependências.
 - Espaço em disco para fontes e artefatos temporários.
+- Cargo e rustc 1.81.0 ou mais recentes, além de `libclang-dev`, para compilar o `nginx-acme`.
 - `OPENSSL_VERSION` quando `OPENSSL_MODE=bundled`.
 - `libssl-dev` quando `OPENSSL_MODE=system`; o script instala esse pacote automaticamente, exceto com `SKIP_DEPS=1`.
 
@@ -38,7 +39,7 @@ Inspecione a interface antes de executar:
 ./build-nginx.sh --help
 ```
 
-O `.env` versionado contém um perfil operacional preenchido. No estado atual, ele seleciona CPU nativa, OpenSSL bundled, canal stable, OpenSSL `3.5.7`, oito jobs, inicialização automática com `zero` e UPX desativado.
+O `.env` versionado contém um perfil operacional preenchido. No estado atual, ele seleciona CPU nativa, OpenSSL system, canal stable, dez jobs, inicialização automática com `zero`, `nginx-acme` `v0.4.1` e UPX desativado.
 
 Para executar com o perfil do `.env`:
 
@@ -76,11 +77,11 @@ O `build-nginx.sh` executa dez fases:
 1. Valida o host e instala dependências Debian/Ubuntu.
 2. Prepara usuário, flags de compilação e diretório de build.
 3. Resolve versão do NGINX e referências das dependências.
-4. Clona as fontes. O OpenSSL é ignorado no modo `system`.
+4. Clona as fontes, incluindo o `nginx-acme`. O OpenSSL é ignorado no modo `system`.
 5. Aplica os patches de hardening do NGINX.
 6. Prepara zlib-ng em modo compatível.
 7. Compila Brotli.
-8. Configura o NGINX e os módulos selecionados.
+8. Configura o NGINX e os módulos selecionados; o `nginx-acme` é linkado estaticamente ao binário.
 9. Compila o NGINX.
 10. Instala, opcionalmente comprime com UPX e valida o binário e a configuração.
 
@@ -137,9 +138,10 @@ O carregador aceita somente as variáveis listadas nesta seção. Variáveis des
 | `BROTLI_REF` | vazio | Tag ou commit do `ngx_brotli`. Vazio usa a ref padrão do clone. |
 | `HEADERS_MORE_REF` | vazio | Tag ou commit do `headers-more-nginx-module`. |
 | `CACHE_PURGE_REF` | vazio | Tag ou commit do `ngx_cache_purge`. |
+| `NGINX_ACME_REF` | `v0.4.1` | Tag ou commit do `nginx-acme`. |
 | `INTERACTIVE` | `0` | Use `1` para selecionar o canal interativamente. |
 
-Para builds reproduzíveis, fixe `APP_VERSION`, `NGINX_REF`, `OPENSSL_VERSION`, `OPENSSL_REF` e todas as refs de dependências. Canais `stable` e `mainline` consultam fontes externas e podem mudar com o tempo.
+Para builds reproduzíveis, fixe `APP_VERSION`, `NGINX_REF`, `OPENSSL_VERSION`, `OPENSSL_REF` e todas as refs de dependências, incluindo `NGINX_ACME_REF`. Canais `stable` e `mainline` consultam fontes externas e podem mudar com o tempo.
 
 ### OpenSSL e KTLS
 
@@ -159,6 +161,19 @@ No modo system, o script instala `libssl-dev`, não clona o OpenSSL e omite `--w
 - Suporte efetivo do hardware e do runtime.
 
 O modo system também pode falhar no HTTP/3 se o OpenSSL da distribuição não fornecer a API QUIC exigida pela versão do NGINX. Não remova HTTP/3 silenciosamente para contornar essa incompatibilidade.
+
+### nginx-acme e OpenSSL
+
+O `nginx-acme` é compilado como módulo estático dentro do binário do NGINX. A release usada por padrão é `v0.4.1` e exige Rust 1.81.0 ou mais recente, `pkg-config` e `libclang` para o `bindgen`.
+
+O script garante que o módulo use a mesma implementação OpenSSL do NGINX:
+
+- Em `OPENSSL_MODE=system`, o módulo usa as bibliotecas compartilhadas da distribuição.
+- Em `OPENSSL_MODE=bundled`, o script compila primeiro o OpenSSL bundled e passa seus headers e bibliotecas estáticas ao Cargo.
+
+Não misture manualmente um módulo `nginx-acme` compilado com outro OpenSSL. O módulo troca objetos SSL com o NGINX e uma implementação diferente pode causar incompatibilidade de ABI, corrupção de memória ou encerramento do processo.
+
+O estado padrão do módulo é direcionado para `CACHE_DIR` por meio de `NGX_ACME_STATE_PREFIX`. Ele contém a chave da conta ACME, certificados e chaves privadas. O exemplo usa `state_path acme-example`, que no perfil padrão resulta em `/var/cache/nginx/acme-example`.
 
 ### Paths de instalação e logs
 
@@ -272,6 +287,7 @@ O modo `auto` pula UPX quando o binário x86_64 usa CET/IBT. Forçar `ENABLE_UPX
 | --- | --- |
 | `etc/nginx/nginx.conf` | Configuração base com eventos, HTTP, TLS, compressão, proxy, rate limits e fallback. |
 | `etc/nginx/conf.d/webp.conf` | Mapa `$webp_suffix` para seleção de arquivos `.webp`. |
+| `etc/nginx/conf.d/nginx-acme.conf.example` | Exemplo opt-in de emissão e renovação automática de certificados ACME. |
 | `etc/systemd/system/nginx.service` | Unidade systemd para o binário customizado em `/usr/sbin/nginx`. |
 | `etc/logrotate.d/nginx` | Rotação dos logs do NGINX. |
 
@@ -310,6 +326,54 @@ Para desenvolvimento local, adicione o domínio ao `/etc/hosts`:
 ```text
 127.0.0.1 wordpress.test
 ```
+
+### Emissão automática com nginx-acme
+
+O módulo `nginx-acme` é incluído estaticamente durante o build. Não é necessário nem correto adicionar `load_module` para ele. O arquivo de exemplo está em `etc/nginx/conf.d/nginx-acme.conf.example` e permanece desativado porque termina em `.conf.example`.
+
+O exemplo usa o endpoint staging do Let's Encrypt, solicita uma chave ECDSA e mantém o estado persistente em `CACHE_DIR`. Antes de ativá-lo:
+
+- Substitua `example.com`, `www.example.com` e `admin@example.com` por valores reais.
+- Crie registros DNS A e, se usado, AAAA apontando para este host.
+- Libere TCP 80 e 443 no firewall e garanta que nenhum serviço externo bloqueie o desafio HTTP-01.
+- Substitua o upstream `127.0.0.1:8080` pelo serviço real da aplicação.
+- Leia e aceite os termos de serviço da autoridade ACME usada.
+
+Depois de compilar uma versão com o módulo, confirme que ele foi linkado ao binário:
+
+```bash
+/usr/sbin/nginx -V 2>&1 | grep --ignore-case -- acme
+```
+
+Ative a configuração somente depois de editar os placeholders:
+
+```bash
+sudo install -o root -g root -m 0644 \
+    etc/nginx/conf.d/nginx-acme.conf.example \
+    /etc/nginx/conf.d/nginx-acme.conf
+sudoedit /etc/nginx/conf.d/nginx-acme.conf
+sudo /usr/sbin/nginx -t -q -c /etc/nginx/nginx.conf
+sudo systemctl reload nginx
+```
+
+O bloco `resolver` é obrigatório para o módulo consultar o diretório ACME e deve apontar para servidores DNS acessíveis pelo host. O listener HTTP na porta 80 é obrigatório para o desafio HTTP-01. O módulo intercepta o caminho do desafio; o restante do servidor de exemplo retorna `404`.
+
+Na primeira inicialização, o módulo cria a conta ACME, solicita o certificado e grava a chave da conta, o certificado e a chave privada no diretório de estado. A emissão acontece no processo de trabalho do NGINX e a renovação é automática; não é necessário cron ou Certbot. Consulte os logs do NGINX caso a emissão não ocorra:
+
+```bash
+sudo journalctl -u nginx -n 100 --no-pager
+sudo tail -n 100 /var/log/nginx/error.log
+```
+
+Após validar o fluxo com staging, troque o `uri` para a produção:
+
+```text
+https://acme-v02.api.letsencrypt.org/directory
+```
+
+Use um novo nome de `acme_issuer` e um novo `state_path`, por exemplo `letsencrypt_production` e `acme-example-production`. Isso evita reutilizar inadvertidamente o estado e a conta do ambiente staging. Atualize também o nome usado em `acme_certificate`, valide com `nginx -t` e recarregue o serviço.
+
+Proteja o diretório de estado: ele contém material equivalente a credenciais privadas. O exemplo usa o prefixo de estado configurado pelo build, normalmente `/var/cache/nginx`; não o exponha por um `location` ou por backup sem controle de acesso.
 
 ## systemd
 
@@ -383,7 +447,7 @@ Para um build tão reproduzível quanto possível, fixe:
 - `APP_VERSION` e `NGINX_REF`.
 - `OPENSSL_VERSION` e `OPENSSL_REF` no modo bundled.
 - `PCRE_REF`, `ZLIB_REF` e `ZSTD_REF`.
-- `BROTLI_REF`, `HEADERS_MORE_REF` e `CACHE_PURGE_REF`.
+- `BROTLI_REF`, `HEADERS_MORE_REF`, `CACHE_PURGE_REF` e `NGINX_ACME_REF`.
 - Imagem/repositório Debian ou Ubuntu.
 - Toolchain, `CPU_OPT` e modo OpenSSL.
 
@@ -393,6 +457,7 @@ Para um build tão reproduzível quanto possível, fixe:
 
 - Não coloque tokens, senhas, chaves privadas ou credenciais no `.env`, README, logs ou mensagens de commit.
 - Revise certificados e permissões de chaves privadas antes de ativar virtual hosts TLS.
+- Trate o estado do `nginx-acme` como sensível: ele contém chaves de conta e certificados privados.
 - Não use `SKIP_DEPS=1` sem confirmar todas as dependências.
 - Não force UPX com CET/IBT.
 - Preserve logs e diretórios de build durante diagnóstico.
@@ -444,4 +509,4 @@ Em x86_64, o script pula UPX automaticamente quando CET/IBT está ativo. Isso é
 
 ## Licença e fontes
 
-O projeto orquestra fontes do NGINX, OpenSSL, PCRE2, zlib-ng, Brotli, zstd e módulos de terceiros. Consulte as licenças e condições de distribuição de cada componente antes de redistribuir o binário ou as imagens geradas.
+O projeto orquestra fontes do NGINX, OpenSSL, PCRE2, zlib-ng, Brotli, zstd, `nginx-acme` e outros módulos de terceiros. O `nginx-acme` é distribuído sob Apache-2.0. Consulte as licenças e condições de distribuição de cada componente antes de redistribuir o binário ou as imagens geradas.

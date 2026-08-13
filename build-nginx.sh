@@ -113,6 +113,7 @@ write_build_state() {
         printf 'ZSTD_DIR=%q\n' "${ZSTD_DIR:-}"
         printf 'HEADERS_MORE_DIR=%q\n' "${HEADERS_MORE_DIR:-}"
         printf 'CACHE_PURGE_DIR=%q\n' "${CACHE_PURGE_DIR:-}"
+        printf 'NGINX_ACME_DIR=%q\n' "${NGINX_ACME_DIR:-}"
         printf 'HTTP_LOG_PATH=%q\n' "${HTTP_LOG_PATH:-}"
         printf 'ERROR_LOG_PATH=%q\n' "${ERROR_LOG_PATH:-}"
         printf 'CLIENT_TEMP_PATH=%q\n' "${CLIENT_TEMP_PATH:-}"
@@ -136,6 +137,7 @@ write_build_state() {
         printf 'brotli_ref=%q\n' "${brotli_ref:-}"
         printf 'headers_more_ref=%q\n' "${headers_more_ref:-}"
         printf 'cache_purge_ref=%q\n' "${cache_purge_ref:-}"
+        printf 'nginx_acme_ref=%q\n' "${nginx_acme_ref:-}"
     } >"$BUILD_STATE_FILE"
 }
 
@@ -173,7 +175,7 @@ load_env_file() {
         key=${key//[[:space:]]/}
 
         case "$key" in
-            APP_VERSION|CPU_OPT|AUTO_VAR_INIT|OPENSSL_MODE|OPENSSL_VERSION|PCRE_VERSION|PCRE_REF|ZLIB_VERSION|ZLIB_REF|ZSTD_VERSION|ZSTD_REF|NGINX_REF|OPENSSL_REF|BROTLI_REF|HEADERS_MORE_REF|CACHE_PURGE_REF|NGINX_CHANNEL|INTERACTIVE|BUILD_LOG|PREFIX|SBIN_PATH|CONF_PATH|PID_PATH|LOCK_PATH|HTTP_LOG_PATH|ERROR_LOG_PATH|CLIENT_TEMP_PATH|PROXY_TEMP_PATH|FASTCGI_TEMP_PATH|LOG_DIR|CACHE_DIR|MODULES_PATH|RUNTIME_USER|RUNTIME_GROUP|CC|CXX|LD|AR|NM|RANLIB|STRIP|JOBS|BUILD_DIR|KEEP_BUILD|SKIP_DEPS|INSTALL_CONFIG|ENABLE_UPX|NGINX_DEBUG)
+            APP_VERSION|CPU_OPT|AUTO_VAR_INIT|OPENSSL_MODE|OPENSSL_VERSION|PCRE_VERSION|PCRE_REF|ZLIB_VERSION|ZLIB_REF|ZSTD_VERSION|ZSTD_REF|NGINX_REF|OPENSSL_REF|BROTLI_REF|HEADERS_MORE_REF|CACHE_PURGE_REF|NGINX_ACME_REF|NGINX_CHANNEL|INTERACTIVE|BUILD_LOG|PREFIX|SBIN_PATH|CONF_PATH|PID_PATH|LOCK_PATH|HTTP_LOG_PATH|ERROR_LOG_PATH|CLIENT_TEMP_PATH|PROXY_TEMP_PATH|FASTCGI_TEMP_PATH|LOG_DIR|CACHE_DIR|MODULES_PATH|RUNTIME_USER|RUNTIME_GROUP|CC|CXX|LD|AR|NM|RANLIB|STRIP|JOBS|BUILD_DIR|KEEP_BUILD|SKIP_DEPS|INSTALL_CONFIG|ENABLE_UPX|NGINX_DEBUG)
                 if [[ ! -v "$key" ]]; then
                     value=$(trim_whitespace "$value")
                     if [[ "$value" == \"*\"* ]]; then
@@ -227,7 +229,8 @@ used. Set NGINX_CHANNEL=stable or NGINX_CHANNEL=mainline to resolve the latest
 release from nginx.org. OpenSSL uses the bundled source by default; set
 OPENSSL_MODE=system to use the distribution development package instead. Set
 CPU_OPT=native or use --native-arch to optimize for the build host CPU. Set
-PCRE_REF, ZLIB_REF and ZSTD_REF for reproducible dependency revisions.
+PCRE_REF, ZLIB_REF, ZSTD_REF and NGINX_ACME_REF for reproducible dependency
+revisions.
 EOF
 }
 
@@ -336,6 +339,25 @@ parse_args() {
 
 require_command() {
     command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+version_at_least() {
+    local required=$1
+    local actual=$2
+
+    [[ "$actual" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+    [[ "$(printf '%s\n%s\n' "$required" "$actual" | sort --version-sort | sed -n '1p')" == "$required" ]]
+}
+
+require_rust_toolchain() {
+    local cargo_version rustc_version
+
+    cargo_version=$(cargo --version | awk '{print $2}')
+    rustc_version=$(rustc --version | awk '{print $2}')
+    version_at_least 1.81.0 "$cargo_version" \
+        || die "Cargo $cargo_version is too old for nginx-acme; Rust 1.81.0 or newer is required"
+    version_at_least 1.81.0 "$rustc_version" \
+        || die "rustc $rustc_version is too old for nginx-acme; Rust 1.81.0 or newer is required"
 }
 
 latest_release_tag() {
@@ -461,6 +483,9 @@ install_dependencies() {
         ca-certificates
         curl
         jq
+        cargo
+        rustc
+        libclang-dev
         perl
         cmake
         pkg-config
@@ -529,6 +554,7 @@ prepare_build_directory() {
     ZSTD_DIR=$BUILD_ROOT/zstd-nginx-module
     HEADERS_MORE_DIR=$BUILD_ROOT/headers-more-nginx-module
     CACHE_PURGE_DIR=$BUILD_ROOT/ngx_cache_purge
+    NGINX_ACME_DIR=$BUILD_ROOT/nginx-acme
 }
 
 cleanup() {
@@ -634,6 +660,7 @@ configure_nginx() {
         --add-module="$ZSTD_DIR"
         --add-module="$HEADERS_MORE_DIR"
         --add-module="$CACHE_PURGE_DIR"
+        --add-module="$NGINX_ACME_DIR"
     )
 
     if [[ "$OPENSSL_MODE" == bundled ]]; then
@@ -657,10 +684,39 @@ configure_nginx() {
 }
 
 build_nginx() {
-    log "compiling NGINX"
+    local -a env_options
+    local -a build_env
+
+    env_options=()
+    build_env=("NGX_ACME_STATE_PREFIX=$CACHE_DIR")
+
+    if [[ "$OPENSSL_MODE" == bundled ]]; then
+        log "building bundled OpenSSL before nginx-acme to share the SSL implementation"
+        (
+            cd -- "$NGINX_DIR"
+            make --jobs "$JOBS" "$OPENSSL_DIR/.openssl/include/openssl/ssl.h"
+        )
+        build_env+=(
+            "OPENSSL_DIR=$OPENSSL_DIR/.openssl"
+            "OPENSSL_INCLUDE_DIR=$OPENSSL_DIR/.openssl/include"
+            "OPENSSL_LIB_DIR=$OPENSSL_DIR/.openssl/lib"
+            'OPENSSL_STATIC=1'
+        )
+    else
+        env_options=(
+            -u OPENSSL_DIR
+            -u OPENSSL_INCLUDE_DIR
+            -u OPENSSL_LIB_DIR
+            -u OPENSSL_ROOT_DIR
+            -u OPENSSL_LIBS
+        )
+        build_env+=('OPENSSL_STATIC=0')
+    fi
+
+    log "compiling NGINX and nginx-acme"
     (
         cd -- "$NGINX_DIR"
-        make --jobs "$JOBS"
+        env "${env_options[@]}" "${build_env[@]}" make --jobs "$JOBS"
     )
 }
 
@@ -847,6 +903,9 @@ phase_install_dependencies() {
     require_command "$NM"
     require_command "$RANLIB"
     require_command "$STRIP"
+    require_command cargo
+    require_command rustc
+    require_rust_toolchain
     require_command getent
     require_command install
     require_command dirname
@@ -916,6 +975,8 @@ phase_resolve_revisions() {
         log "selected $NGINX_CHANNEL NGINX release: $APP_VERSION"
     fi
     [[ -n "$APP_VERSION" ]] || die "APP_VERSION is not set; use .env, --version or a release channel"
+    version_at_least 1.22.0 "$APP_VERSION" \
+        || die "nginx-acme requires NGINX 1.22.0 or newer"
 
     nginx_ref=${NGINX_REF:-release-$APP_VERSION}
     if [[ "$OPENSSL_MODE" == bundled ]]; then
@@ -929,6 +990,7 @@ phase_resolve_revisions() {
     brotli_ref=${BROTLI_REF:-}
     headers_more_ref=${HEADERS_MORE_REF:-}
     cache_purge_ref=${CACHE_PURGE_REF:-}
+    nginx_acme_ref=${NGINX_ACME_REF:-v0.4.1}
 
     if [[ -z "$pcre_ref" ]]; then
         log "resolving latest PCRE2 release"
@@ -954,7 +1016,8 @@ phase_resolve_revisions() {
     log "PCRE2 ref: $pcre_ref"
     log "zlib-ng ref: $zlib_ref"
     log "zstd module ref: $zstd_ref"
-    log "third-party modules: zstd, headers-more, cache-purge"
+    log "nginx-acme ref: $nginx_acme_ref"
+    log "third-party modules: zstd, headers-more, cache-purge, nginx-acme"
     write_build_state
 }
 
@@ -970,6 +1033,7 @@ phase_download_sources() {
     clone_repository tokers/zstd-nginx-module "$ZSTD_DIR" "$zstd_ref"
     clone_repository openresty/headers-more-nginx-module "$HEADERS_MORE_DIR" "$headers_more_ref"
     clone_repository nginx-modules/ngx_cache_purge "$CACHE_PURGE_DIR" "$cache_purge_ref"
+    clone_repository nginx/nginx-acme "$NGINX_ACME_DIR" "$nginx_acme_ref"
 }
 
 phase_patch_sources() {
@@ -1008,7 +1072,7 @@ phase_install_nginx() {
 main() {
     local arch
     local nginx_ref openssl_ref pcre_ref zlib_ref zstd_ref brotli_ref
-    local headers_more_ref cache_purge_ref
+    local headers_more_ref cache_purge_ref nginx_acme_ref
 
     load_env_file
 
@@ -1028,6 +1092,7 @@ main() {
     BROTLI_REF=${BROTLI_REF:-}
     HEADERS_MORE_REF=${HEADERS_MORE_REF:-}
     CACHE_PURGE_REF=${CACHE_PURGE_REF:-}
+    NGINX_ACME_REF=${NGINX_ACME_REF:-v0.4.1}
     NGINX_CHANNEL=${NGINX_CHANNEL:-pinned}
     INTERACTIVE=${INTERACTIVE:-0}
 

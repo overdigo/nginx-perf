@@ -1,0 +1,58 @@
+# Opt-in example for nginx-acme automatic certificate management.
+#
+# This file is intentionally named *.conf.example and is not installed or
+# loaded by build-nginx.sh. Copy it to nginx-acme.conf only after replacing
+# every example value and confirming that the domain points to this host.
+#
+# The build sets the module state prefix to CACHE_DIR. With the default build,
+# state_path acme-example is stored below /var/cache/nginx. The state contains
+# the ACME account key, certificates and private keys and must remain private.
+
+# The nginx-acme module requires a resolver in the http context. Replace these
+# resolvers with DNS servers reachable from the host when necessary.
+resolver 1.1.1.1 1.0.0.1 valid=300s;
+
+# Start with Let's Encrypt staging to avoid production rate limits. Use a new
+# issuer name and state_path when switching to the production directory.
+acme_issuer letsencrypt_staging {
+    uri         https://acme-staging-v02.api.letsencrypt.org/directory;
+    contact     admin@example.com;
+    state_path  acme-example;
+    accept_terms_of_service;
+}
+
+acme_shared_zone zone=ngx_acme_shared:1M;
+
+# HTTP-01 validation requires public HTTP access on port 80. The module
+# intercepts the ACME challenge path; other requests are rejected here.
+server {
+    listen 80;
+    listen [::]:80;
+    server_name example.com www.example.com;
+
+    location / {
+        return 404;
+    }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    listen 443 quic reuseport;
+    listen [::]:443 quic reuseport;
+    server_name example.com www.example.com;
+
+    acme_certificate letsencrypt_staging key=ecdsa:256;
+
+    ssl_certificate     $acme_certificate;
+    ssl_certificate_key $acme_certificate_key;
+
+    # Optional on NGINX versions that provide ssl_certificate_cache:
+    # ssl_certificate_cache max=2;
+
+    add_header Alt-Svc 'h3=":443"; ma=86400' always;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+    }
+}
