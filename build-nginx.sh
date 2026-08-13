@@ -349,6 +349,16 @@ version_at_least() {
     [[ "$(printf '%s\n%s\n' "$required" "$actual" | sort --version-sort | sed -n '1p')" == "$required" ]]
 }
 
+check_cflag() {
+    local flag=$1
+    echo 'int main(void) { return 0; }' | "$CC" -Werror $flag -x c -c - -o /dev/null >/dev/null 2>&1
+}
+
+check_ldflag() {
+    local flag=$1
+    echo 'int main(void) { return 0; }' | "$CC" -fuse-ld="$LD" $flag -x c - -o /dev/null >/dev/null 2>&1
+}
+
 require_rust_toolchain() {
     local cargo_version rustc_version
 
@@ -612,13 +622,20 @@ configure_nginx() {
     local nginx_cflags
     local nginx_ldflags
     local -a configure_args
+    local -a ldflags_list
 
     nginx_cflags="$HARDENING_CFLAGS $WARNING_CFLAGS"
-    nginx_ldflags="-fuse-ld=lld -pie -Wl,-z,relro,-z,now -Wl,-z,noexecstack -Wl,-z,separate-code -Wl,--as-needed"
+    ldflags_list=("-fuse-ld=$LD" "-pie" "-Wl,-z,relro,-z,now" "-Wl,-z,noexecstack" "-Wl,--as-needed")
+
+    if check_ldflag '-Wl,-z,separate-code'; then
+        ldflags_list+=('-Wl,-z,separate-code')
+    fi
 
     if [[ -n "$CET_LDFLAGS" ]]; then
-        nginx_ldflags="$nginx_ldflags $CET_LDFLAGS"
+        ldflags_list+=("$CET_LDFLAGS")
     fi
+
+    nginx_ldflags="${ldflags_list[*]}"
 
     log "configuring NGINX $APP_VERSION"
     configure_args=(
@@ -933,6 +950,8 @@ phase_install_dependencies() {
 
 phase_prepare_environment() {
     local arch
+    local flex_arrays_flag=''
+    local fortify_flag='-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2'
 
     if [[ -z "$JOBS" ]]; then
         JOBS=$(nproc)
@@ -947,8 +966,16 @@ phase_prepare_environment() {
             else
                 ARCH_CFLAGS='-march=x86-64 -mtune=generic'
             fi
-            CET_CFLAGS='-fcf-protection=full'
-            CET_LDFLAGS='-Wl,-z,shstk'
+            if check_cflag '-fcf-protection=full'; then
+                CET_CFLAGS='-fcf-protection=full'
+            else
+                CET_CFLAGS=''
+            fi
+            if check_ldflag '-Wl,-z,shstk'; then
+                CET_LDFLAGS='-Wl,-z,shstk'
+            else
+                CET_LDFLAGS=''
+            fi
             ;;
         aarch64|arm64)
             [[ "$CPU_OPT" == generic ]] || die "CPU_OPT=native is currently supported only on x86_64/amd64"
@@ -973,9 +1000,20 @@ phase_prepare_environment() {
 
     AUTO_VAR_INIT_CFLAG="-ftrivial-auto-var-init=$AUTO_VAR_INIT"
     log "automatic variable initialization: $AUTO_VAR_INIT_CFLAG"
-    HARDENING_CFLAGS="-O2 -pipe $ARCH_CFLAGS -flto -fPIE -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -D_GLIBCXX_ASSERTIONS -fstrict-flex-arrays=3 -fstack-clash-protection -fstack-protector-strong $CET_CFLAGS $AUTO_VAR_INIT_CFLAG -fno-delete-null-pointer-checks -fno-strict-overflow -fasynchronous-unwind-tables -fomit-frame-pointer"
+
+    if check_cflag '-fstrict-flex-arrays=3'; then
+        flex_arrays_flag='-fstrict-flex-arrays=3'
+    fi
+
+    if check_cflag '-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3'; then
+        fortify_flag='-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3'
+    fi
+
+    HARDENING_CFLAGS="-O2 -pipe $ARCH_CFLAGS -flto -fPIE $fortify_flag -D_GLIBCXX_ASSERTIONS $flex_arrays_flag -fstack-clash-protection -fstack-protector-strong $CET_CFLAGS $AUTO_VAR_INIT_CFLAG -fno-delete-null-pointer-checks -fno-strict-overflow -fasynchronous-unwind-tables -fomit-frame-pointer"
+    HARDENING_CFLAGS=$(echo "$HARDENING_CFLAGS" | tr -s ' ')
     WARNING_CFLAGS='-Wall -Wextra -Wformat=2 -Wimplicit-fallthrough -Wno-error=implicit-fallthrough -Wno-error=unused-parameter -Werror=format-security -Werror=return-type -Wno-deprecated-declarations'
     DEPENDENCY_CFLAGS="-O2 -pipe $ARCH_CFLAGS -flto -fPIC -fstack-protector-strong $CET_CFLAGS"
+    DEPENDENCY_CFLAGS=$(echo "$DEPENDENCY_CFLAGS" | tr -s ' ')
 
     ensure_runtime_user
     prepare_build_directory
