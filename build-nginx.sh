@@ -713,7 +713,9 @@ build_nginx() {
         log "building bundled OpenSSL before nginx-acme to share the SSL implementation"
         (
             cd -- "$NGINX_DIR"
-            make --jobs "$JOBS" "$OPENSSL_DIR/.openssl/include/openssl/ssl.h"
+            make --jobs "$JOBS" \
+                -f objs/Makefile \
+                "$OPENSSL_DIR/.openssl/include/openssl/ssl.h"
         )
         build_env+=(
             "OPENSSL_DIR=$OPENSSL_DIR/.openssl"
