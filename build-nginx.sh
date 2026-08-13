@@ -1034,7 +1034,7 @@ main() {
     PREFIX=${PREFIX:-/usr/share}
     SBIN_PATH=${SBIN_PATH:-/usr/sbin/nginx}
     CONF_PATH=${CONF_PATH:-/etc/nginx/nginx.conf}
-    PID_PATH=${PID_PATH:-/var/run/nginx.pid}
+    PID_PATH=${PID_PATH:-/run/nginx.pid}
     LOCK_PATH=${LOCK_PATH:-/var/lock/nginx.lock}
     HTTP_LOG_PATH=${HTTP_LOG_PATH:-/var/log/nginx/access.log}
     ERROR_LOG_PATH=${ERROR_LOG_PATH:-/var/log/nginx/error.log}
