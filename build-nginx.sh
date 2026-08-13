@@ -622,20 +622,9 @@ configure_nginx() {
     local nginx_cflags
     local nginx_ldflags
     local -a configure_args
-    local -a ldflags_list
 
     nginx_cflags="$HARDENING_CFLAGS $WARNING_CFLAGS"
-    ldflags_list=("-fuse-ld=$LD" "-pie" "-Wl,-z,relro,-z,now" "-Wl,-z,noexecstack" "-Wl,--as-needed")
-
-    if check_ldflag '-Wl,-z,separate-code'; then
-        ldflags_list+=('-Wl,-z,separate-code')
-    fi
-
-    if [[ -n "$CET_LDFLAGS" ]]; then
-        ldflags_list+=("$CET_LDFLAGS")
-    fi
-
-    nginx_ldflags="${ldflags_list[*]}"
+    nginx_ldflags="-fuse-ld=$LD -pie -Wl,-z,relro,-z,now -Wl,-z,noexecstack -Wl,--as-needed"
 
     log "configuring NGINX $APP_VERSION"
     configure_args=(
@@ -881,13 +870,13 @@ compress_binary() {
             log "UPX compression disabled"
             ;;
         1|true|yes)
-            [[ -z "$CET_LDFLAGS" ]] || die "UPX is incompatible with CET/IBT; use --no-upx"
+            [[ -z "$CET_CFLAGS" ]] || die "UPX is incompatible with CET/IBT; use --no-upx"
             require_command upx
             log "compressing NGINX with UPX"
             run_root upx --best --lzma "$SBIN_PATH"
             ;;
         auto)
-            if [[ -n "$CET_LDFLAGS" ]]; then
+            if [[ -n "$CET_CFLAGS" ]]; then
                 warn "skipping UPX because the binary uses CET/IBT hardening"
             elif command -v upx >/dev/null 2>&1; then
                 log "compressing NGINX with UPX"
@@ -971,11 +960,7 @@ phase_prepare_environment() {
             else
                 CET_CFLAGS=''
             fi
-            if check_ldflag '-Wl,-z,shstk'; then
-                CET_LDFLAGS='-Wl,-z,shstk'
-            else
-                CET_LDFLAGS=''
-            fi
+            CET_LDFLAGS=''
             ;;
         aarch64|arm64)
             [[ "$CPU_OPT" == generic ]] || die "CPU_OPT=native is currently supported only on x86_64/amd64"
@@ -994,7 +979,7 @@ phase_prepare_environment() {
 
     log "CPU tuning: $CPU_OPT ($ARCH_CFLAGS)"
 
-    if [[ -n "$CET_LDFLAGS" && "$ENABLE_UPX" =~ ^(1|true|yes)$ ]]; then
+    if [[ -n "$CET_CFLAGS" && "$ENABLE_UPX" =~ ^(1|true|yes)$ ]]; then
         die "UPX is incompatible with CET/IBT; use --no-upx"
     fi
 
