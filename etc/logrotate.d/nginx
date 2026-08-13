@@ -13,6 +13,6 @@
                 fi \
         endscript
         postrotate
-                invoke-rc.d nginx rotate >/dev/null 2>&1
+                systemctl kill --signal=SIGUSR1 --kill-who=main nginx.service >/dev/null 2>&1 || true
         endscript
 }

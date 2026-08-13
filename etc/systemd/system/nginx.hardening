@@ -21,14 +21,37 @@ RestartSec=2s
 # Performance e Limites de Recursos
 LimitNOFILE=65535
 LimitMEMLOCK=67108864
+MemorySwapMax=0
+TasksMax=4096
 
-# Segurança e Isolamento (Moderado)
-PrivateTmp=true
-ProtectSystem=full
+# Segurança: Filesystem
+ProtectSystem=strict
+ReadWritePaths=/run /var/log/nginx /var/cache/nginx /var/lib/nginx
 ProtectHome=true
-NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectClock=true
 ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
 ProtectControlGroups=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+UMask=0027
+
+# Segurança: Capabilities (whitelist apenas o necessário para NGINX)
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL CAP_CHOWN CAP_DAC_OVERRIDE CAP_IPC_LOCK
+
+# Segurança: Syscalls, Namespaces e Rede
+SystemCallArchitectures=native
+SystemCallFilter=~@clock @cpu-emulation @debug @module @mount @obsolete @raw-io @reboot @swap
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
 
 [Install]
 WantedBy=multi-user.target
